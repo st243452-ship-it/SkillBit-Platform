@@ -1,11 +1,8 @@
 import os
 import sqlite3
 import json
-import ssl
-import urllib.request
-import xml.etree.ElementTree as ET
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from passlib.context import CryptContext
@@ -17,7 +14,7 @@ import random
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel('gemini-flash-latest')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 app = FastAPI()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -37,8 +34,7 @@ def init_db():
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS users 
                      (id INTEGER PRIMARY KEY, email TEXT UNIQUE, password TEXT, role TEXT, name TEXT, 
-                      wallet_balance INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0, 
-                      company TEXT, designation TEXT, resume_text TEXT,
+                      tokens INTEGER DEFAULT 50, company TEXT, designation TEXT, resume_text TEXT,
                       is_phone_verified INTEGER DEFAULT 0, is_email_verified INTEGER DEFAULT 0)''')
         
         c.execute('''CREATE TABLE IF NOT EXISTS jobs 
@@ -52,17 +48,17 @@ def init_db():
         conn.commit()
 init_db()
 
-# --- MODELS ---
-def get_password_hash(password): return pwd_context.hash(password[:70])
-def verify_password(plain, hashed): return pwd_context.verify(plain[:70], hashed)
+# --- UTILS ---
+def get_password_hash(password): return pwd_context.hash(password)
+def verify_password(plain, hashed): return pwd_context.verify(plain, hashed)
 
+# --- MODELS ---
 class UserSignup(BaseModel): email: str; password: str; role: str; name: str; company: str = ""; designation: str = ""
 class UserLogin(BaseModel): email: str; password: str
 class JobPost(BaseModel): title: str; company: str; location: str; salary: str; description: str; experience: str; skills: str; referral_bonus: int; recruiter_email: str
 class UpdateStatus(BaseModel): id: int; status: str
 class InterviewRequest(BaseModel): email: str
 class InterviewSubmit(BaseModel): email: str; is_correct: bool
-class ReferRequest(BaseModel): user_email: str; job_id: int; friend_email: str; friend_name: str
 
 # --- AUTH ROUTES ---
 @app.post("/api/signup")
@@ -152,6 +148,14 @@ def update_status(req: UpdateStatus):
     return {"status": "success"}
 
 # --- USER ROUTES ---
+@app.get("/api/user/applications/{email}")
+def get_user_applications(email: str):
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT * FROM applications WHERE user_email = ? ORDER BY id DESC", (email,))
+        return c.fetchall()
+
 @app.post("/api/upload-resume")
 async def upload_resume(email: str = Form(...), resume: UploadFile = File(...)):
     try:
@@ -208,10 +212,14 @@ async def apply_for_job(user_email: str = Form(...), job_id: int = Form(...)):
         
         c.execute("UPDATE users SET tokens = tokens - ? WHERE email=?", (cost, user_email))
         date = datetime.now().strftime("%Y-%m-%d")
-        c.execute("INSERT INTO applications (job_id, user_email, job_title, company, status, date, ai_score) VALUES (?, ?, ?, ?, 'Received', ?, 85)",
-                  (job_id, user_email, job['title'], job['company'], date))
+        
+        # Calculate Mock AI Score
+        ai_score = random.randint(70, 95)
+        
+        c.execute("INSERT INTO applications (job_id, user_email, job_title, company, status, date, ai_score) VALUES (?, ?, ?, ?, 'Received', ?, ?)",
+                  (job_id, user_email, job['title'], job['company'], date, ai_score))
         conn.commit()
-    return {"status": "success", "message": "Application Sent!"}
+    return {"status": "success", "message": "Application Sent!", "ai_score": ai_score}
 
 @app.get("/api/jobs")
 def get_jobs(search: str = ""):
@@ -224,7 +232,3 @@ def get_jobs(search: str = ""):
         else:
             c.execute("SELECT * FROM jobs ORDER BY id DESC")
         return c.fetchall()
-
-@app.get("/api/news")
-def get_news():
-    return [{"title": "Tech hiring surge in India", "time": "1h ago"}, {"title": "AI salaries jump 20%", "time": "3h ago"}, {"title": "Google expands in Hyderabad", "time": "5h ago"}]
