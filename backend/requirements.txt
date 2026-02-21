@@ -6,3 +6,4 @@ google-generativeai
 pypdf
 passlib[bcrypt]
 python-multipart
+psycopg2-binary
